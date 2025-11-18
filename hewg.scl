@@ -1,0 +1,34 @@
+[hewg]
+version = "0.4.0-alpha.nd"
+type = "library"
+
+[project]
+version = "0.0.0"
+org = "crow"
+name = "crowcpu"
+description = "PUT YOUR DESCRIPTION HERE!"
+authors = { }
+
+[depends]
+internal = { 
+	"=crow.brbt-0.2.0"
+}
+external = { 
+	"=crow.crowcpu_arch-0.1.0" 
+}
+
+[cxx]
+flags = { "-Wall" "-Wextra" "-Werror" }
+std = 23
+sources = { }
+
+[c]
+flags = { "-Wall" "-Wextra" "-Werror" }
+std = 17
+sources = { 
+	"crowcpu.c" 
+	"mmu.c"
+}
+
+[hooks.prebuild]
+[hooks.postbuild]
