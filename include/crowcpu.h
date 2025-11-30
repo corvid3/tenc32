@@ -16,7 +16,6 @@
  *   * segment 1: data segment, r/w, 4kb length @ physical address 0x6000
  *
  * the bios rom must contain a POFF executable (prt)
- *   * section ''
  *   * section 'text': loaded into segment 0
  *   * section 'data': loaded into segment 1
  *
@@ -52,10 +51,10 @@
 typedef enum
 {
   /* is there a peripheral installed in this slot? */
-  CROWCPU_CCI_DC_FLAG_ACTIVE = 0b0001,
-} crowcpu_cci_device_configuration_flags;
+  TENC32_CCI_DC_FLAG_ACTIVE = 0b0001,
+} tenc32_cci_device_configuration_flags;
 
-typedef struct crowcpu_motherboard_t crowcpu_motherboard_t;
+typedef struct tenc32_motherboard_t tenc32_motherboard_t;
 
 typedef struct
 {
@@ -69,7 +68,7 @@ typedef struct
    * trigger an interrupt request
    */
   uint32_t cci_update_ms;
-} crowcpu_configuration_t;
+} tenc32_configuration_t;
 
 /* in IO space, addresses are not required to congruent.
  * that is, a word write at address 0x00 may or may not cause
@@ -78,53 +77,68 @@ typedef struct
  */
 
 /* return false to trigger a segmentation fault */
-typedef bool (*crowcpu_hardware_read)(void* data, uint32_t addr, uint32_t* out);
+typedef bool (*tenc32_hardware_read)(void* data, uint32_t addr, uint32_t* out);
 /* return false to trigger a segmentation fault */
-typedef bool (*crowcpu_hardware_write)(void* data, uint32_t addr, uint32_t val);
-typedef void (*crowcpu_hardware_cleanup)(void* data);
+typedef bool (*tenc32_hardware_write)(void* data, uint32_t addr, uint32_t val);
+typedef void (*tenc32_hardware_cleanup)(void* data);
 
-struct crowcpu_hardware_io
+struct tenc32_hardware_io
 {
   uint32_t id;
   void* data;
-  crowcpu_hardware_read read;
-  crowcpu_hardware_write write;
-  crowcpu_hardware_cleanup cleanup;
+  tenc32_hardware_read read;
+  tenc32_hardware_write write;
+  tenc32_hardware_cleanup cleanup;
 };
 
-enum crowcpu_step_val
+enum tenc32_step_val
 {
   /* no changes in execution state */
-  CROWCPU_STEP_OK,
+  TENC32_STEP_OK,
 
-  /* halting state */
-  CROWCPU_STEP_HALT,
+  /* halting state (NOT poweroff!) */
+  TENC32_STEP_HALT,
+
+  TENC32_STEP_POWEROFF,
+
+  /* crashing halt, double exception */
+  TENC32_STEP_CRASH,
 
   /* hit a breakpoint */
-  CROWCPU_STEP_BREAK,
+  TENC32_STEP_BREAK,
 };
 
 void
-crowcpu_default_configuration(crowcpu_configuration_t*);
+tenc32_default_configuration(tenc32_configuration_t*);
 
-/* make sure to invoke crowcpu_restart
+/* make sure to invoke tenc32_restart
  */
-crowcpu_motherboard_t*
-crowcpu_motherboard_create(crowcpu_configuration_t*, size_t ram_size);
+tenc32_motherboard_t*
+tenc32_motherboard_create(tenc32_configuration_t*, size_t ram_size);
 
 /* attaches a cci (crow component interface) bus to the motherboard
  * if you want the CPU to be able to talk to the universe, you want this
  */
 void
-crowcpu_motherboard_add_cci(crowcpu_motherboard_t* mobo,
-                            short port,
-                            short max_components);
+tenc32_motherboard_add_cci(tenc32_motherboard_t* mobo,
+                           short port,
+                           short max_components);
+
+/* only used for hardware interrupt requests
+ * software interrupts occur through machine executable codl
+ */
+// void
+// tenc32_motherboard_send_irq(tenc32_motherboard_t* mobo, unsigned short);
 
 void
-crowcpu_motherboard_send_irq(crowcpu_motherboard_t* mobo, unsigned short);
+tenc32_motherboard_destroy(tenc32_motherboard_t*);
 
+/* function that gets ran on an exception
+ * for debugging os/bios etc
+ */
 void
-crowcpu_motherboard_destroy(crowcpu_motherboard_t*);
+tenc32_insert_exception_callback(tenc32_motherboard_t*,
+                                 void (*)(tenc32_motherboard_t*));
 
 /* performs a logical restart of the cpu
  *  - loads the bios segments into memory
@@ -132,41 +146,64 @@ crowcpu_motherboard_destroy(crowcpu_motherboard_t*);
  *  - sets protection mode to 0
  */
 void
-crowcpu_restart(crowcpu_motherboard_t* cpu,
-                char const (*bios)[CROWCPU_ROM_SIZE]);
+tenc32_restart(tenc32_motherboard_t* cpu, char const (*bios)[TENC32_ROM_SIZE]);
 
-enum crowcpu_step_val
-crowcpu_step(crowcpu_motherboard_t* cpu);
-
-/* works with logical segmentation addresses,
- * i.e. addr is NOT physical.
- */
-bool
-crowcpu_read_word(crowcpu_motherboard_t*, uint32_t addr, uint32_t* out);
+enum tenc32_step_val
+tenc32_step(tenc32_motherboard_t* cpu);
 
 /* works with logical segmentation addresses,
  * i.e. addr is NOT physical.
  */
 bool
-crowcpu_write_word(crowcpu_motherboard_t*, uint32_t addr, uint32_t in);
+tenc32_read_word(tenc32_motherboard_t*, uint32_t addr, uint32_t* out);
 
 /* works with logical segmentation addresses,
  * i.e. addr is NOT physical.
  */
 bool
-crowcpu_read_byte(crowcpu_motherboard_t*, uint32_t addr, uint32_t* out);
+tenc32_write_word(tenc32_motherboard_t*, uint32_t addr, uint32_t in);
 
 /* works with logical segmentation addresses,
  * i.e. addr is NOT physical.
  */
 bool
-crowcpu_write_byte(crowcpu_motherboard_t*, uint32_t addr, uint32_t in);
+tenc32_read_byte(tenc32_motherboard_t*, uint32_t addr, uint32_t* out);
+
+/* works with logical segmentation addresses,
+ * i.e. addr is NOT physical.
+ */
+bool
+tenc32_write_byte(tenc32_motherboard_t*, uint32_t addr, uint32_t in);
+
+bool
+tenc32_read_mem(tenc32_motherboard_t*,
+                uint32_t addr,
+                uint32_t length,
+                char* buffer);
+
+bool
+tenc32_write_mem(tenc32_motherboard_t*,
+                 uint32_t addr,
+                 uint32_t length,
+                 char const* data);
+
+/* thread-safe, fine to call asynchronously */
+void
+tenc32_trigger_hardware_interrupt(tenc32_motherboard_t*, unsigned irq);
+
+/* thread-safe, fine to call asynchronously
+ * triggers the non-maskable interrupt
+ * passes a single value on the stack (parameter value)
+ * useful for stuff like shutting down
+ */
+void
+tenc32_trigger_nonmaskable_interrupt(tenc32_motherboard_t*, unsigned value);
 
 /* returns false if IO space is already registered
  * 0x3FF is forcibly bound to the MMU's internals
  */
 bool
-crowcpu_add_io_space(crowcpu_motherboard_t*, struct crowcpu_hardware_io);
+tenc32_add_io_space(tenc32_motherboard_t*, struct tenc32_hardware_io);
 
 void
-crowcpu_dump_registers(crowcpu_motherboard_t*);
+tenc32_dump_registers(tenc32_motherboard_t*);

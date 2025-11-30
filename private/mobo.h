@@ -1,60 +1,67 @@
 #pragma once
 
 #include <stdbool.h>
+#include <threads.h>
 
 #include "cci.h"
 #include "crow.crowcpu_arch/crowcpu_arch.h"
 #include "crowcpu.h"
 #include "mmu.h"
 
+#define MAX_IRQ 8u
+
 #define BITS_AT(src, offset, length)                                           \
   ((src >> offset) && (~0U >> (sizeof(int) - length)))
 
-typedef struct
+/* programmable interrupt controller */
+struct tenc32_pic
 {
-  /* segment in which the interrupt lives */
-  uint32_t segment;
+  mtx_t mutex;
+  uint32_t incoming_flags;
+  uint32_t currently_handled;
+};
 
-  /* offset to the entry point of the interrupt */
-  uint32_t offset;
-
-  struct
-  {
-    /* can the processor in user mode access this interrupt */
-    bool user_accessable;
-  } flags;
-} interrupt_table_entry_t;
+#define GETFLAG(cpu, flag) (cpu.crs.flags & flag)
 
 typedef struct
 {
-  crowcpu_register_t registers[REGISTER_END];
+  tenc32_register_t registers[REGISTER_END];
 
   struct
   {
-    // 0 = system mode
-    // 1 = user mode
-    bool mode : 1;
+    tenc32_register_t cr0;
 
-    bool test_lt : 1;
-    bool test_eq : 1;
+    /* interrupt mask
+     * 0 = ignore interrupt
+     * 1 = allow interrupt
+     */
+    tenc32_register_t imask;
 
-    bool overflow : 1;
-  } flags;
+    /* execution flag bit */
+    tenc32_register_t flags;
+    tenc32_register_t idtr;
+  } crs;
 
-  interrupt_table_entry_t interrupt_table[CROWCPU_MAX_DEFINABLE_INTERRUPTS];
-  uint_fast32_t interrupt_table_size;
+  /* -1 = no exception */
+  int exception;
 
-  bool interrupt_requests[CROWCPU_MAX_DEFINABLE_INTERRUPTS];
-} crowcpu_cpu_t;
+  /* waiting for an interrupt to happen... */
+  bool halting;
+} tenc32_cpu_t;
 
-typedef struct crowcpu_motherboard_t
+typedef struct tenc32_motherboard_t
 {
-  crowcpu_configuration_t conf;
+  tenc32_configuration_t conf;
 
-  crowcpu_cpu_t cpu;
+  tenc32_cpu_t cpu;
+  struct tenc32_pic pic;
   mmu_t mmu;
   cci_t cci;
 
   uint8_t* memory;
   uint32_t memory_size;
-} crowcpu_motherboard_t;
+
+  bool poweroff;
+
+  void (*exception_callback)(tenc32_motherboard_t*);
+} tenc32_motherboard_t;

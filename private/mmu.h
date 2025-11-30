@@ -10,7 +10,7 @@
 
 struct segment_table_entry
 {
-  crowcpu_segment_descriptor_flags flags;
+  tenc32_segment_descriptor_flags flags;
 
   /*
    * segment ID
@@ -29,7 +29,7 @@ struct segment_table_entry
 
 struct page_table_entry
 {
-  crowcpu_page_table_entry_flags flags;
+  tenc32_page_table_entry_flags flags;
   uint32_t offset;
 };
 
@@ -58,9 +58,9 @@ typedef enum
 } mmu_addressing_mode;
 
 void
-crowcpu_mmu_init(struct crowcpu_motherboard_t*);
+tenc32_mmu_init(struct tenc32_motherboard_t*);
 void
-crowcpu_mmu_reset(struct crowcpu_motherboard_t*);
+tenc32_mmu_reset(struct tenc32_motherboard_t*);
 
 /* will search the translation buffer for a given
  * seg/page address, and will insert a new
@@ -69,10 +69,10 @@ crowcpu_mmu_reset(struct crowcpu_motherboard_t*);
  * the lower offset bytes will be set to 0
  */
 struct tlb_page_node*
-tlb_page_consult(crowcpu_motherboard_t*, uint32_t addr);
+tlb_page_consult(tenc32_motherboard_t*, uint32_t addr);
 
 /* addr should be a full address, where the segment selector
  * is in the upper bits
  */
 struct tlb_segment_node*
-tlb_segment_consult(crowcpu_motherboard_t* mmu, uint32_t addr);
+tlb_segment_consult(tenc32_motherboard_t* mmu, uint32_t addr);

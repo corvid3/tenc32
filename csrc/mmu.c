@@ -86,6 +86,22 @@ struct tlb_policy
   // unsigned segment_clock_arm;
 };
 
+struct resolve
+{
+  bool paged;
+  bool io_space;
+  struct tlb_segment_node* segment;
+  struct tlb_page_node* page;
+
+  uint32_t mmio_space;
+  uint32_t phys_addr;
+};
+
+static bool
+mmu_resolve_address(tenc32_motherboard_t* mobo,
+                    uint32_t req,
+                    struct resolve* out);
+
 static int
 page_table_comparison(uint32_t* lhs, uint32_t* rhs)
 {
@@ -206,17 +222,22 @@ segment_tlb_allocator(struct brbt* tree,
 }
 
 static bool
-mmu_self_read([[maybe_unused]] void* data,
-              [[maybe_unused]] uint32_t addr,
-              [[maybe_unused]] uint32_t* out)
+mmu_self_read(void* data, uint32_t addr, uint32_t* out)
 {
-  return false;
+  tenc32_motherboard_t* mobo = data;
+
+  addr &= 0xFFFF;
+  if (addr != 0)
+    return false;
+
+  *out = mobo->mmu.staging_register;
+  return true;
 }
 
 static bool
 mmu_self_write(void* data, uint32_t addr, uint32_t val)
 {
-  crowcpu_motherboard_t* mobo = data;
+  tenc32_motherboard_t* mobo = data;
 
   addr &= 0xFFFF;
 
@@ -234,6 +255,14 @@ mmu_self_write(void* data, uint32_t addr, uint32_t val)
       brbt_clear(&mobo->mmu.tlb.segments);
       assert(brbt_size(&mobo->mmu.tlb.pages) == 0);
       return true;
+    } else if (val == 2) {
+      /* translate a virtual address to a physical one */
+      struct resolve r;
+      if (!mmu_resolve_address(mobo, mobo->mmu.staging_register, &r))
+        mobo->mmu.staging_register = -1;
+      else
+        mobo->mmu.staging_register = r.phys_addr;
+      return true;
     } else {
       return false;
     }
@@ -243,7 +272,7 @@ mmu_self_write(void* data, uint32_t addr, uint32_t val)
 }
 
 void
-crowcpu_mmu_init(struct crowcpu_motherboard_t* mobo)
+tenc32_mmu_init(struct tenc32_motherboard_t* mobo)
 {
   mobo->mmu.segment_table_offset = 0;
 
@@ -283,24 +312,24 @@ crowcpu_mmu_init(struct crowcpu_motherboard_t* mobo)
                 NULL,
                 (brbt_comparator)segment_table_comparison);
 
-  mobo->mmu.hardware_io = brbt_create(sizeof(struct crowcpu_hardware_io),
-                                      offsetof(struct crowcpu_hardware_io, id),
+  mobo->mmu.hardware_io = brbt_create(sizeof(struct tenc32_hardware_io),
+                                      offsetof(struct tenc32_hardware_io, id),
                                       brbt_create_default_policy(),
                                       NULL,
                                       (brbt_comparator)hardware_io_comparison);
 
-  struct crowcpu_hardware_io mmu_self_io;
-  mmu_self_io.id = 0x3FF;
+  struct tenc32_hardware_io mmu_self_io;
+  mmu_self_io.id = 0x0000;
   mmu_self_io.data = mobo;
   mmu_self_io.read = mmu_self_read;
   mmu_self_io.write = mmu_self_write;
   mmu_self_io.cleanup = NULL;
 
-  crowcpu_add_io_space(mobo, mmu_self_io);
+  tenc32_add_io_space(mobo, mmu_self_io);
 }
 
 void
-crowcpu_mmu_reset(struct crowcpu_motherboard_t* mobo)
+tenc32_mmu_reset(struct tenc32_motherboard_t* mobo)
 {
   /* dont clear the hardware io */
   brbt_clear(&mobo->mmu.tlb.pages);
@@ -311,27 +340,27 @@ crowcpu_mmu_reset(struct crowcpu_motherboard_t* mobo)
 
   /* set up the default segments */
   struct tlb_segment_node code_segment = {
-    .id = CROWCPU_STARTUP_CODE_SEGMENT << 22,
+    .id = TENC32_STARTUP_CODE_SEGMENT << 22,
     .flags.active = true,
     .flags.execute = true,
     .flags.protected = true,
     .flags.io = false,
     .flags.paged = false,
     .flags.write = false,
-    .data.unpaged.offset = CROWCPU_STARTUP_CODE_SEGMENT_PHYSICAL_OFFSET,
-    .data.unpaged.size = CROWCPU_STARTUP_CODE_SEGMENT_SIZE,
+    .data.unpaged.offset = TENC32_STARTUP_CODE_SEGMENT_PHYSICAL_OFFSET,
+    .data.unpaged.size = TENC32_STARTUP_CODE_SEGMENT_SIZE,
   };
 
   struct tlb_segment_node data_segment = {
-    .id = CROWCPU_STARTUP_DATA_SEGMENT << 22,
+    .id = TENC32_STARTUP_DATA_SEGMENT << 22,
     .flags.active = true,
     .flags.write = true,
     .flags.protected = true,
     .flags.execute = false,
     .flags.io = false,
     .flags.paged = false,
-    .data.unpaged.offset = CROWCPU_STARTUP_DATA_SEGMENT_PHYSICAL_OFFSET,
-    .data.unpaged.size = CROWCPU_STARTUP_DATA_SEGMENT_SIZE,
+    .data.unpaged.offset = TENC32_STARTUP_DATA_SEGMENT_PHYSICAL_OFFSET,
+    .data.unpaged.size = TENC32_STARTUP_DATA_SEGMENT_SIZE,
   };
 
   struct tlb_segment_node mmu_io_segment = {
@@ -342,7 +371,7 @@ crowcpu_mmu_reset(struct crowcpu_motherboard_t* mobo)
     .flags.io = true,
     .flags.execute = false,
     .flags.paged = false,
-    .data.io.hardware_io = 0x3FF,
+    .data.io.hardware_io = 0x000,
   };
 
   brbt_insert(&mobo->mmu.tlb.segments, &code_segment, true);
@@ -351,7 +380,7 @@ crowcpu_mmu_reset(struct crowcpu_motherboard_t* mobo)
 }
 
 bool
-crowcpu_add_io_space(crowcpu_motherboard_t* mobo, struct crowcpu_hardware_io io)
+tenc32_add_io_space(tenc32_motherboard_t* mobo, struct tenc32_hardware_io io)
 {
   if (brbt_find(&mobo->mmu.hardware_io, &io.id) != BRBT_NIL)
     return false;
@@ -363,7 +392,7 @@ crowcpu_add_io_space(crowcpu_motherboard_t* mobo, struct crowcpu_hardware_io io)
 
 /* must be aligned */
 static uint32_t
-word_at_phys_addr(crowcpu_motherboard_t* mobo, uint32_t phys)
+word_at_phys_addr(tenc32_motherboard_t* mobo, uint32_t phys)
 {
   if (phys % 4)
     return 0;
@@ -372,7 +401,7 @@ word_at_phys_addr(crowcpu_motherboard_t* mobo, uint32_t phys)
 }
 
 static struct segment_table_entry
-read_segment_entry_at_location(crowcpu_motherboard_t* mobo, uint32_t phys)
+read_segment_entry_at_location(tenc32_motherboard_t* mobo, uint32_t phys)
 {
   struct segment_table_entry out;
 
@@ -385,7 +414,7 @@ read_segment_entry_at_location(crowcpu_motherboard_t* mobo, uint32_t phys)
 }
 
 static struct page_table_entry
-read_page_entry_at_location(crowcpu_motherboard_t* mobo, uint32_t phys)
+read_page_entry_at_location(tenc32_motherboard_t* mobo, uint32_t phys)
 {
   struct page_table_entry out;
 
@@ -396,7 +425,7 @@ read_page_entry_at_location(crowcpu_motherboard_t* mobo, uint32_t phys)
 }
 
 static bool
-segment_walk(crowcpu_motherboard_t* mobo,
+segment_walk(tenc32_motherboard_t* mobo,
              uint32_t addr,
              struct segment_table_entry* out)
 {
@@ -404,7 +433,7 @@ segment_walk(crowcpu_motherboard_t* mobo,
   assert(out);
 
   /* TODO: add an exception here */
-  uint32_t req_seg = CROWCPU_GET_SEGMENT(addr);
+  uint32_t req_seg = TENC32_GET_SEGMENT(addr);
   uint32_t phys_offset = mobo->mmu.segment_table_offset;
   uint32_t len = word_at_phys_addr(mobo, phys_offset);
   phys_offset += 0x10; // aligned
@@ -422,14 +451,14 @@ segment_walk(crowcpu_motherboard_t* mobo,
 }
 
 static bool
-page_walk(crowcpu_motherboard_t* mobo,
+page_walk(tenc32_motherboard_t* mobo,
           uint32_t addr,
           struct page_table_entry* out)
 {
   assert(mobo);
   assert(out);
 
-  uint32_t req_seg = CROWCPU_GET_SEGMENT(addr);
+  uint32_t req_seg = TENC32_GET_SEGMENT(addr);
 
   uint32_t len = mobo->mmu.segment_table_offset;
 
@@ -445,20 +474,9 @@ page_walk(crowcpu_motherboard_t* mobo,
   return true;
 }
 
-struct resolve
-{
-  bool paged;
-  bool io_space;
-  struct tlb_segment_node* segment;
-  struct tlb_page_node* page;
-
-  uint32_t mmio_space;
-  uint32_t phys_addr;
-};
-
 /* returns the physical address of the requested memory location */
 static bool
-mmu_resolve_address(crowcpu_motherboard_t* mobo,
+mmu_resolve_address(tenc32_motherboard_t* mobo,
                     uint32_t req,
                     struct resolve* out)
 {
@@ -466,13 +484,13 @@ mmu_resolve_address(crowcpu_motherboard_t* mobo,
 
   /* TODO: throw a general segmentation fault */
   if (!segment || !segment->flags.active) {
-    crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
-
+    mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
     return false;
   }
 
-  if (mobo->cpu.flags.mode == 1 && segment->flags.protected) {
-    crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
+  /* user mode execution cannot access protected segments */
+  if (segment->flags.protected && mobo->cpu.crs.cr0 & TENC32_CR0_MODE) {
+    mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
     return false;
   }
 
@@ -483,7 +501,7 @@ mmu_resolve_address(crowcpu_motherboard_t* mobo,
 
   if (out->io_space) {
     out->mmio_space = segment->data.io.hardware_io;
-    out->phys_addr = CROWCPU_GET_SEGMENT_OFFSET(req);
+    out->phys_addr = TENC32_GET_SEGMENT_OFFSET(req);
     return true;
   }
 
@@ -493,22 +511,22 @@ mmu_resolve_address(crowcpu_motherboard_t* mobo,
 
     if (!page) {
       /* null is only returned if and only if the page doesnt exist */
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
+      mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
       return false;
     }
 
     if (!page->flags.active) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_INACTIVE_PAGE);
+      mobo->cpu.exception = TENC32_INTERRUPT_INACTIVE_PAGE;
       return false;
     }
 
-    out->phys_addr = CROWCPU_GET_PAGE_OFFSET(req) + page->offset;
+    out->phys_addr = TENC32_GET_PAGE_OFFSET(req) + page->offset;
   } else {
-    uint32_t off = CROWCPU_GET_SEGMENT_OFFSET(req);
+    uint32_t off = TENC32_GET_SEGMENT_OFFSET(req);
     uint32_t loc = off + segment->data.unpaged.offset;
 
     if (loc >= segment->data.unpaged.offset + segment->data.unpaged.size) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
+      mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
       /* further checking should be performed by the consumer such that
        * the total bytes read of the address does not leave the bounds
        */
@@ -522,11 +540,11 @@ mmu_resolve_address(crowcpu_motherboard_t* mobo,
 }
 
 bool
-crowcpu_read_word(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t* out)
+tenc32_read_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
 {
   /* words must be read on a boundary */
   if (addr % 4 != 0) {
-    crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_UNALIGNED_ACCESS);
+    mobo->cpu.exception = TENC32_INTERRUPT_UNALIGNED_ACCESS;
     return false;
   }
 
@@ -537,15 +555,15 @@ crowcpu_read_word(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t* out)
   if (r.io_space) {
     brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
     if (handler_node == BRBT_NIL) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_INVALID_IO_SPACE);
+      mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
       return false;
     }
 
-    struct crowcpu_hardware_io* io =
+    struct tenc32_hardware_io* io =
       brbt_get(&mobo->mmu.hardware_io, handler_node);
 
     if (!io->read(io->data, addr, out)) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
+      mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
       return false;
     }
 
@@ -560,11 +578,11 @@ crowcpu_read_word(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t* out)
 }
 
 bool
-crowcpu_write_word(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t in)
+tenc32_write_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
 {
   /* words must be read on a boundary */
   if (addr % 4 != 0) {
-    crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_UNALIGNED_ACCESS);
+    mobo->cpu.exception = TENC32_INTERRUPT_UNALIGNED_ACCESS;
     return false;
   }
 
@@ -576,15 +594,15 @@ crowcpu_write_word(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t in)
   if (r.io_space) {
     brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
     if (handler_node == BRBT_NIL) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_INVALID_IO_SPACE);
+      mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
       return false;
     }
 
-    struct crowcpu_hardware_io* io =
+    struct tenc32_hardware_io* io =
       brbt_get(&mobo->mmu.hardware_io, handler_node);
 
     if (!io->write(io->data, addr, in)) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
+      mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
       return false;
     }
 
@@ -599,7 +617,76 @@ crowcpu_write_word(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t in)
 }
 
 bool
-crowcpu_read_byte(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t* out)
+tenc32_read_mem(tenc32_motherboard_t* mobo,
+                uint32_t addr,
+                uint32_t length,
+                char* buf)
+{
+  unsigned start = addr;
+  unsigned end = addr + length;
+
+  /* read/writes CANNOT cross segment boundaries */
+  if ((start & TENC32_SEGMENT_MASK) != (end & TENC32_SEGMENT_MASK))
+    return false;
+
+  /* get the segment type */
+  struct tlb_segment_node* segment = tlb_segment_consult(mobo, start);
+
+  if (segment->flags.paged) {
+    fprintf(stderr,
+            "tenc32_read_mem does not currently support reading from pages\n");
+    assert(false);
+  } else {
+    unsigned segment_end =
+      segment->data.unpaged.offset + segment->data.unpaged.size;
+
+    if (end >= segment_end)
+      return false;
+
+    memcpy(buf, &mobo->memory[segment->data.unpaged.offset], length);
+  }
+
+  return true;
+}
+
+bool
+tenc32_write_mem(tenc32_motherboard_t* mobo,
+                 uint32_t addr,
+                 uint32_t length,
+                 char const* restrict data)
+{
+  unsigned start = addr;
+  unsigned end = addr + length;
+
+  /* read/writes CANNOT cross segment boundaries */
+  if ((start & TENC32_SEGMENT_MASK) != (end & TENC32_SEGMENT_MASK))
+    return false;
+
+  /* get the segment type */
+  struct tlb_segment_node* segment = tlb_segment_consult(mobo, start);
+
+  if (segment->flags.paged) {
+    fprintf(stderr,
+            "tenc32_read_mem does not currently support reading from pages\n");
+    assert(false);
+  } else {
+    unsigned segment_end =
+      segment->data.unpaged.offset + segment->data.unpaged.size;
+    unsigned phys_begin =
+      segment->data.unpaged.offset + TENC32_GET_SEGMENT_OFFSET(addr);
+    unsigned phys_end = phys_begin + length;
+
+    if (phys_end > segment_end)
+      return false;
+
+    memcpy(&mobo->memory[phys_begin], data, length);
+  }
+
+  return true;
+}
+
+bool
+tenc32_read_byte(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
 {
   struct resolve r;
   if (!mmu_resolve_address(mobo, addr, &r))
@@ -608,15 +695,15 @@ crowcpu_read_byte(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t* out)
   if (r.io_space) {
     brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
     if (handler_node == BRBT_NIL) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_INVALID_IO_SPACE);
+      mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
       return false;
     }
 
-    struct crowcpu_hardware_io* io =
+    struct tenc32_hardware_io* io =
       brbt_get(&mobo->mmu.hardware_io, handler_node);
 
     if (!io->read(io->data, addr, out)) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
+      mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
       return false;
     }
 
@@ -631,7 +718,7 @@ crowcpu_read_byte(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t* out)
 }
 
 bool
-crowcpu_write_byte(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t in)
+tenc32_write_byte(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
 {
   struct resolve r;
 
@@ -641,15 +728,15 @@ crowcpu_write_byte(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t in)
   if (r.io_space) {
     brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
     if (handler_node == BRBT_NIL) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_INVALID_IO_SPACE);
+      mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
       return false;
     }
 
-    struct crowcpu_hardware_io* io =
+    struct tenc32_hardware_io* io =
       brbt_get(&mobo->mmu.hardware_io, handler_node);
 
     if (!io->write(io->data, addr, in)) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
+      mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
       return false;
     }
 
@@ -659,15 +746,16 @@ crowcpu_write_byte(crowcpu_motherboard_t* mobo, uint32_t addr, uint32_t in)
   if (r.paged)
     r.page->flags.read = true;
 
-  *(uint32_t*)&mobo->memory[r.phys_addr] = in;
+  *(uint8_t*)&mobo->memory[r.phys_addr] = in;
+
   return true;
 }
 
 struct tlb_page_node*
-tlb_page_consult(crowcpu_motherboard_t* mobo, uint32_t addr)
+tlb_page_consult(tenc32_motherboard_t* mobo, uint32_t addr)
 {
   /* include both the segment and the page id */
-  addr &= (~0u << CROWCPU_PAGE_OFFSET_BITS);
+  addr &= (~0u << TENC32_PAGE_OFFSET_BITS);
   brbt_node node = brbt_find(&mobo->mmu.tlb.pages, &addr);
 
   /* add it to the tlb */
@@ -679,9 +767,9 @@ tlb_page_consult(crowcpu_motherboard_t* mobo, uint32_t addr)
     struct tlb_page_node new_node;
     new_node.id = addr;
     new_node.offset = entry.offset;
-    new_node.flags.active = entry.flags & CROWCPU_PAGE_ACTIVE;
-    new_node.flags.written = entry.flags & CROWCPU_PAGE_WRITTEN;
-    new_node.flags.read = entry.flags & CROWCPU_PAGE_READ;
+    new_node.flags.active = entry.flags & TENC32_PAGE_ACTIVE;
+    new_node.flags.written = entry.flags & TENC32_PAGE_WRITTEN;
+    new_node.flags.read = entry.flags & TENC32_PAGE_READ;
 
     brbt_insert(&mobo->mmu.tlb.pages, &new_node, true);
     node = brbt_find(&mobo->mmu.tlb.pages, &addr);
@@ -696,7 +784,7 @@ tlb_page_consult(crowcpu_motherboard_t* mobo, uint32_t addr)
 }
 
 struct tlb_segment_node*
-tlb_segment_consult(crowcpu_motherboard_t* mobo, uint32_t addr)
+tlb_segment_consult(tenc32_motherboard_t* mobo, uint32_t addr)
 {
   addr &= (~0u << 22);
   brbt_node node = brbt_find(&mobo->mmu.tlb.segments, &addr);
@@ -709,17 +797,17 @@ tlb_segment_consult(crowcpu_motherboard_t* mobo, uint32_t addr)
 
     struct tlb_segment_node new_node;
     new_node.id = addr;
-    new_node.flags.active = entry.flags & CROWCPU_SEGMENT_DESCRIPTOR_ACTIVE;
-    new_node.flags.write = entry.flags & CROWCPU_SEGMENT_DESCRIPTOR_WRITE;
-    new_node.flags.execute = entry.flags & CROWCPU_SEGMENT_DESCRIPTOR_EXECUTE;
-    new_node.flags.paged = entry.flags & CROWCPU_SEGMENT_DESCRIPTOR_PAGED;
-    new_node.flags.io = entry.flags & CROWCPU_SEGMENT_DESCRIPTOR_IO;
+    new_node.flags.active = entry.flags & TENC32_SEGMENT_DESCRIPTOR_ACTIVE;
+    new_node.flags.write = entry.flags & TENC32_SEGMENT_DESCRIPTOR_WRITE;
+    new_node.flags.execute = entry.flags & TENC32_SEGMENT_DESCRIPTOR_EXECUTE;
+    new_node.flags.paged = entry.flags & TENC32_SEGMENT_DESCRIPTOR_PAGED;
+    new_node.flags.io = entry.flags & TENC32_SEGMENT_DESCRIPTOR_IO;
     new_node.flags.protected =
-      entry.flags & CROWCPU_SEGMENT_DESCRIPTOR_PROTECTED;
+      entry.flags & TENC32_SEGMENT_DESCRIPTOR_PROTECTED;
 
     /* segments cannot be paged and represent IO space at the same time */
     if (new_node.flags.paged && new_node.flags.io) {
-      crowcpu_motherboard_send_irq(mobo, CROWCPU_INTERRUPT_SEGMENTATION_FAULT);
+      mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
       return NULL;
     }
 

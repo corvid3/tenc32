@@ -28,6 +28,8 @@ std = 17
 sources = { 
 	"crowcpu.c" 
 	"mmu.c"
+	"cpc.c"
+	"pic.c"
 }
 
 [hooks.prebuild]
