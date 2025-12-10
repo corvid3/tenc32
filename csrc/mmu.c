@@ -16,6 +16,9 @@
 #define TLB_SEGMENT_CAP 8
 #define MAX_HARDWARE_IO 32
 
+static void
+dump_tlb(tenc32_motherboard_t* mobo);
+
 struct tlb_page_node
 {
   /* segment & page index */
@@ -258,10 +261,17 @@ mmu_self_write(void* data, uint32_t addr, uint32_t val)
     } else if (val == 2) {
       /* translate a virtual address to a physical one */
       struct resolve r;
-      if (!mmu_resolve_address(mobo, mobo->mmu.staging_register, &r))
+      if (!mmu_resolve_address(mobo, mobo->mmu.staging_register, &r)) {
         mobo->mmu.staging_register = -1;
-      else
+        // fprintf(stderr, "failed to translate address\n");
+      } else {
+        // fprintf(stderr,
+        //         "TRANSLATING: %#x to %#x\n",
+        //         mobo->mmu.staging_register,
+        //         r.phys_addr);
         mobo->mmu.staging_register = r.phys_addr;
+      }
+
       return true;
     } else {
       return false;
@@ -406,9 +416,9 @@ read_segment_entry_at_location(tenc32_motherboard_t* mobo, uint32_t phys)
   struct segment_table_entry out;
 
   out.flags = *(uint32_t*)&mobo->memory[phys];
-  out.id = word_at_phys_addr(mobo, phys + sizeof(uint32_t) * 1);
-  out.b = word_at_phys_addr(mobo, phys + sizeof(uint32_t) * 2);
-  out.c = word_at_phys_addr(mobo, phys + sizeof(uint32_t) * 3);
+  out.id = word_at_phys_addr(mobo, phys + 0x04);
+  out.b = word_at_phys_addr(mobo, phys + 0x08);
+  out.c = word_at_phys_addr(mobo, phys + 0x0c);
 
   return out;
 }
@@ -425,6 +435,32 @@ read_page_entry_at_location(tenc32_motherboard_t* mobo, uint32_t phys)
 }
 
 static bool
+segment_walk_dump(tenc32_motherboard_t* mobo)
+{
+  assert(mobo);
+
+  /* TODO: add an exception here */
+  uint32_t phys_offset = mobo->mmu.segment_table_offset;
+  uint32_t len = word_at_phys_addr(mobo, phys_offset);
+  phys_offset += 0x10; // aligned
+
+  printf("segment table offset: %#.6x\n", mobo->mmu.segment_table_offset);
+  printf("segment table length: %#.6x\n", len);
+
+  for (unsigned i = 0; i < len; i++) {
+    struct segment_table_entry out =
+      read_segment_entry_at_location(mobo, phys_offset);
+
+    fprintf(stderr, "ID %#.6x\n", out.id);
+
+    phys_offset += 0x10;
+  }
+
+  return false;
+}
+
+static bool
+
 segment_walk(tenc32_motherboard_t* mobo,
              uint32_t addr,
              struct segment_table_entry* out)
@@ -440,9 +476,8 @@ segment_walk(tenc32_motherboard_t* mobo,
 
   for (unsigned i = 0; i < len; i++) {
     *out = read_segment_entry_at_location(mobo, phys_offset);
-    if (out->id == req_seg) {
+    if (out->id == req_seg)
       return true;
-    }
 
     phys_offset += 0x10;
   }
@@ -485,12 +520,18 @@ mmu_resolve_address(tenc32_motherboard_t* mobo,
   /* TODO: throw a general segmentation fault */
   if (!segment || !segment->flags.active) {
     mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+    EDPRINTV("segment nonexistent or inactive %s %s",
+             segment ? "true" : "false",
+             segment ? segment->flags.active ? "true" : "false" : "");
+    // dump_tlb(mobo);
+    segment_walk_dump(mobo);
     return false;
   }
 
   /* user mode execution cannot access protected segments */
   if (segment->flags.protected && mobo->cpu.crs.cr0 & TENC32_CR0_MODE) {
     mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+    EDPRINT("segment protected and not in kernel mode");
     return false;
   }
 
@@ -512,11 +553,13 @@ mmu_resolve_address(tenc32_motherboard_t* mobo,
     if (!page) {
       /* null is only returned if and only if the page doesnt exist */
       mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+      EDPRINT("page nonexistent in segment");
       return false;
     }
 
     if (!page->flags.active) {
       mobo->cpu.exception = TENC32_INTERRUPT_INACTIVE_PAGE;
+      EDPRINT("page not active in segment");
       return false;
     }
 
@@ -527,6 +570,7 @@ mmu_resolve_address(tenc32_motherboard_t* mobo,
 
     if (loc >= segment->data.unpaged.offset + segment->data.unpaged.size) {
       mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+      EDPRINT("attempting to read past the segment end in unpaged segment");
       /* further checking should be performed by the consumer such that
        * the total bytes read of the address does not leave the bounds
        */
@@ -545,6 +589,7 @@ tenc32_read_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
   /* words must be read on a boundary */
   if (addr % 4 != 0) {
     mobo->cpu.exception = TENC32_INTERRUPT_UNALIGNED_ACCESS;
+    EDPRINT("misaligned word read");
     return false;
   }
 
@@ -556,6 +601,7 @@ tenc32_read_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
     brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
     if (handler_node == BRBT_NIL) {
       mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
+      EDPRINT("nonexistent io space read");
       return false;
     }
 
@@ -564,6 +610,7 @@ tenc32_read_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
 
     if (!io->read(io->data, addr, out)) {
       mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+      EDPRINT("invalid io space read");
       return false;
     }
 
@@ -583,6 +630,7 @@ tenc32_write_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
   /* words must be read on a boundary */
   if (addr % 4 != 0) {
     mobo->cpu.exception = TENC32_INTERRUPT_UNALIGNED_ACCESS;
+    EDPRINT("misaligned word write");
     return false;
   }
 
@@ -595,6 +643,7 @@ tenc32_write_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
     brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
     if (handler_node == BRBT_NIL) {
       mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
+      EDPRINT("nonexistent io space write");
       return false;
     }
 
@@ -603,6 +652,7 @@ tenc32_write_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
 
     if (!io->write(io->data, addr, in)) {
       mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+      EDPRINT("invalid io space write");
       return false;
     }
 
@@ -639,11 +689,14 @@ tenc32_read_mem(tenc32_motherboard_t* mobo,
   } else {
     unsigned segment_end =
       segment->data.unpaged.offset + segment->data.unpaged.size;
+    unsigned phys_begin =
+      segment->data.unpaged.offset + TENC32_GET_SEGMENT_OFFSET(addr);
+    unsigned phys_end = phys_begin + length;
 
-    if (end >= segment_end)
+    if (phys_end > segment_end)
       return false;
 
-    memcpy(buf, &mobo->memory[segment->data.unpaged.offset], length);
+    memcpy(buf, &mobo->memory[phys_begin], length);
   }
 
   return true;
@@ -696,6 +749,7 @@ tenc32_read_byte(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
     brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
     if (handler_node == BRBT_NIL) {
       mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
+      EDPRINT("nonexistent io space read");
       return false;
     }
 
@@ -704,6 +758,7 @@ tenc32_read_byte(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
 
     if (!io->read(io->data, addr, out)) {
       mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+      EDPRINT("invalid io space read");
       return false;
     }
 
@@ -729,6 +784,7 @@ tenc32_write_byte(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
     brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
     if (handler_node == BRBT_NIL) {
       mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
+      EDPRINT("nonexistent io space write");
       return false;
     }
 
@@ -737,6 +793,7 @@ tenc32_write_byte(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
 
     if (!io->write(io->data, addr, in)) {
       mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+      EDPRINT("invalid io space write");
       return false;
     }
 
@@ -808,6 +865,7 @@ tlb_segment_consult(tenc32_motherboard_t* mobo, uint32_t addr)
     /* segments cannot be paged and represent IO space at the same time */
     if (new_node.flags.paged && new_node.flags.io) {
       mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+      EDPRINT("segment is paged and io");
       return NULL;
     }
 
@@ -827,4 +885,26 @@ tlb_segment_consult(tenc32_motherboard_t* mobo, uint32_t addr)
   }
 
   return brbt_get(&mobo->mmu.tlb.segments, node);
+}
+
+[[maybe_unused]] static void
+dump_tlb_visit(struct brbt* brbt, void* userdata, brbt_node val)
+{
+  (void)brbt;
+  (void)userdata;
+  (void)val;
+#ifdef EN_EDPRINT
+  (void)userdata;
+  struct tlb_segment_node* entry = brbt_get(brbt, val);
+  fprintf(stderr, "SEGMENT DUMP: ID %#.6x\n", entry->id);
+#endif
+}
+
+[[maybe_unused]] static void
+dump_tlb(tenc32_motherboard_t* mobo)
+{
+  (void)mobo;
+#ifdef EN_EDPRINT
+  brbt_iterate(&mobo->mmu.tlb.segments, dump_tlb_visit, mobo);
+#endif
 }

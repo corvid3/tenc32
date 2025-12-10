@@ -65,3 +65,18 @@ typedef struct tenc32_motherboard_t
 
   void (*exception_callback)(tenc32_motherboard_t*);
 } tenc32_motherboard_t;
+
+// #define EN_EDPRINT
+#ifdef EN_EDPRINT
+#define STRINGIFY_INNER(xyz) #xyz
+#define STRINGIFY(xyz) STRINGIFY_INNER(xyz)
+#define EDPRINT(str)                                                           \
+  fprintf(stderr, STRINGIFY(__LINE__) ":" STRINGIFY(__FILE__) " " str "\n")
+#define EDPRINTV(str, ...)                                                     \
+  fprintf(stderr,                                                              \
+          STRINGIFY(__LINE__) ":" STRINGIFY(__FILE__) " " str "\n",            \
+          __VA_ARGS__)
+#else
+#define EDPRINT(str) (void)0
+#define EDPRINTV(str, ...) (void)0
+#endif

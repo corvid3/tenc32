@@ -162,6 +162,7 @@ trigger_isrt(tenc32_motherboard_t* mobo)
 static bool
 trigger_isr(tenc32_motherboard_t* mobo, unsigned id)
 {
+  // printf("EXCEPTION %i TRIGGERED\n", id);
   /* make sure to unset halting mode */
   mobo->cpu.halting = false;
   assert(id < 64);
@@ -183,7 +184,8 @@ trigger_isr(tenc32_motherboard_t* mobo, unsigned id)
    * but disregard the interrupt and queue a SIGILL
    */
   if (mobo->cpu.crs.cr0 & TENC32_CR0_MODE)
-    return mobo->cpu.exception = TENC32_INTERRUPT_ILLEGAL_INSTRUCTION, true;
+    return EDPRINT("attempting to trigger an ISR in user mode"),
+           mobo->cpu.exception = TENC32_INTERRUPT_ILLEGAL_INSTRUCTION, true;
 
   if (!push_stack(mobo, mobo->cpu.registers[REGISTER_PC]))
     return false;
@@ -255,6 +257,7 @@ tenc32_step(tenc32_motherboard_t* mobo)
 
   if (!tenc32_arch_decode(&instr, instr_word)) {
     mobo->cpu.exception = TENC32_INTERRUPT_ILLEGAL_INSTRUCTION;
+    EDPRINT("invalid instruction detected in step loop");
     goto OK_END;
   }
 
@@ -315,7 +318,12 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_LOAD:
+      // fprintf(stderr,
+      //         "load: %#x\n",
+      //         UADDI(mobo->cpu.registers[instr.payload.mem_reg_indirect.base],
+      //               (signed)instr.payload.mem_reg_indirect.offset));
       switch (instr.addressing) {
         case TENC32_ADDRESSING_MEMORY_BASE_OFFSET_WORD:
           tenc32_read_word(
@@ -337,7 +345,12 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_STORE:
+      // fprintf(stderr,
+      //         "store: %#x\n",
+      //         UADDI(mobo->cpu.registers[instr.payload.mem_reg_indirect.base],
+      //               (signed)instr.payload.mem_reg_indirect.offset));
       switch (instr.addressing) {
         case TENC32_ADDRESSING_MEMORY_BASE_OFFSET_WORD:
           tenc32_write_word(
@@ -359,6 +372,7 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_ADD:
       switch (instr.addressing) {
         case TENC32_ADDRESSING_ARITHMETIC_IMMEDIATE_REGISTER:
@@ -383,6 +397,7 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_SUB:
       switch (instr.addressing) {
         case TENC32_ADDRESSING_ARITHMETIC_IMMEDIATE_REGISTER:
@@ -407,6 +422,32 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
+    case TENC32_DECODED_MUL:
+      switch (instr.addressing) {
+        case TENC32_ADDRESSING_ARITHMETIC_IMMEDIATE_REGISTER:
+          mobo->cpu.registers[instr.payload.arithmetic_constant_reg.dest] =
+            instr.payload.arithmetic_constant_reg.lhs *
+            mobo->cpu.registers[instr.payload.arithmetic_constant_reg.rhs];
+          break;
+
+        case TENC32_ADDRESSING_ARITHMETIC_REGISTER_IMMEDIATE:
+          mobo->cpu.registers[instr.payload.arithmetic_reg_constant.dest] =
+            mobo->cpu.registers[instr.payload.arithmetic_reg_constant.lhs] *
+            instr.payload.arithmetic_reg_constant.rhs;
+          break;
+
+        case TENC32_ADDRESSING_ARITHMETIC_REGISTER_REGISTER:
+          mobo->cpu.registers[instr.payload.arithmetic.dest] =
+            mobo->cpu.registers[instr.payload.arithmetic.lhs] *
+            mobo->cpu.registers[instr.payload.arithmetic.rhs];
+          break;
+
+        default:
+          break;
+      }
+      goto OK_END;
+
     case TENC32_DECODED_TEST:
       switch (instr.addressing) {
         unsigned res;
@@ -448,6 +489,7 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_AND:
       switch (instr.addressing) {
         case TENC32_ADDRESSING_ARITHMETIC_IMMEDIATE_REGISTER:
@@ -472,6 +514,7 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_OR:
       switch (instr.addressing) {
         case TENC32_ADDRESSING_ARITHMETIC_IMMEDIATE_REGISTER:
@@ -496,6 +539,7 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_XOR:
       switch (instr.addressing) {
         case TENC32_ADDRESSING_ARITHMETIC_IMMEDIATE_REGISTER:
@@ -520,10 +564,12 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_NOT:
       mobo->cpu.registers[instr.payload.not.dest] =
         ~mobo->cpu.registers[instr.payload.not.src];
       goto OK_END;
+
     case TENC32_DECODED_SHIFT_LEFT:
       switch (instr.addressing) {
         case TENC32_ADDRESSING_ARITHMETIC_IMMEDIATE_REGISTER:
@@ -548,6 +594,7 @@ tenc32_step(tenc32_motherboard_t* mobo)
           break;
       }
       goto OK_END;
+
     case TENC32_DECODED_SHIFT_RIGHT:
       switch (instr.addressing) {
         case TENC32_ADDRESSING_ARITHMETIC_IMMEDIATE_REGISTER:
@@ -643,8 +690,6 @@ tenc32_step(tenc32_motherboard_t* mobo)
     case TENC32_DECODED_SYSINT:
       trigger_isr(mobo, instr.payload.sysint.id);
       goto OK_END;
-    case TENC32_DECODED_PUSH:
-    case TENC32_DECODED_POP:
     case TENC32_DECODED_SYSJUMP:
       mobo->cpu.exception = TENC32_INTERRUPT_ILLEGAL_INSTRUCTION;
       goto OK_END;

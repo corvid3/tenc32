@@ -35,5 +35,7 @@ tenc32_init_pic(tenc32_motherboard_t* mobo)
   io.data = mobo;
   io.read = (tenc32_hardware_read)picrd;
   io.write = (tenc32_hardware_write)picwr;
-  tenc32_add_io_space(mobo, io);
+  if (!tenc32_add_io_space(mobo, io))
+    fprintf(stderr, "tenc32 fatal error: unable to insert pic io space\n"),
+      exit(1);
 }

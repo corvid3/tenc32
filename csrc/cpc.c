@@ -38,5 +38,8 @@ tenc32_init_cpc(tenc32_motherboard_t* mobo)
   io.write = (tenc32_hardware_write)cpcwr;
   io.cleanup = NULL;
   io.data = mobo;
-  tenc32_add_io_space(mobo, io);
+
+  if (!tenc32_add_io_space(mobo, io))
+    fprintf(stderr, "tenc32 fatal error: unable to insert cpc io space\n"),
+      exit(1);
 }
