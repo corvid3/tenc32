@@ -2,103 +2,21 @@
 #include <crow.crowcpu_arch/crowcpu_arch.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include "crow.brbt/brbt.h"
 #include "crowcpu.h"
 #include "mmu.h"
 #include "mobo.h"
 
 #define CLOCK_EMPTY ((unsigned)-1)
-#define TLB_PAGE_CAP 16
-#define TLB_SEGMENT_CAP 8
 #define MAX_HARDWARE_IO 32
 
 static void
 dump_tlb(tenc32_motherboard_t* mobo);
-
-struct tlb_page_node
-{
-  /* segment & page index */
-  uint32_t id;
-
-  struct
-  {
-    bool active;
-    bool written;
-    bool read;
-  } flags;
-
-  /* offset into physical memory
-   * must be aligned to 2^12 bits
-   */
-  uint32_t offset;
-};
-
-struct tlb_segment_node
-{
-  /* segment index */
-  uint32_t id;
-
-  /* flag info */
-  struct
-  {
-    bool active;
-    bool write;
-    bool execute;
-    bool paged;
-    bool protected;
-    bool io;
-  } flags;
-
-  /* payload information within a&b */
-  union
-  {
-    struct
-    {
-      uint32_t offset;
-      uint32_t size;
-    } unpaged;
-
-    struct
-    {
-      uint32_t offset;
-    } paged;
-
-    struct
-    {
-      uint32_t hardware_io;
-    } io;
-  } data;
-};
-
-struct tlb_policy
-{
-  // brbt_node page_clock[TLB_PAGE_CAP];
-  // unsigned page_clock_arm;
-
-  /* need to know if the TLB has been fully flushed,
-   * so we use a size tracker.
-   * in that case, this should be 0 and we set arm to EMPTY
-   */
-  // unsigned page_clock_size;
-
-  // brbt_node segment_clock[TLB_SEGMENT_CAP];
-  // unsigned segment_clock_arm;
-};
-
-struct resolve
-{
-  bool paged;
-  bool io_space;
-  struct tlb_segment_node* segment;
-  struct tlb_page_node* page;
-
-  uint32_t mmio_space;
-  uint32_t phys_addr;
-};
+static struct tlb_segment_node*
+tlb_segment_insert(mmu_t* mmu, uint32_t segment);
 
 static bool
 mmu_resolve_address(tenc32_motherboard_t* mobo,
@@ -106,31 +24,9 @@ mmu_resolve_address(tenc32_motherboard_t* mobo,
                     struct resolve* out);
 
 static int
-page_table_comparison(uint32_t* lhs, uint32_t* rhs)
-{
-  if (*lhs < *rhs)
-    return -1;
-
-  if (*lhs > *rhs)
-    return 1;
-
-  return 0;
-}
-
-static int
-segment_table_comparison(uint32_t* lhs, uint32_t* rhs)
-{
-  if (*lhs < *rhs)
-    return -1;
-
-  if (*lhs > *rhs)
-    return 1;
-
-  return 0;
-}
-
-static int
-hardware_io_comparison(uint32_t* lhs, uint32_t* rhs)
+hardware_io_comparison(struct brbt const* tree [[maybe_unused]],
+                       uint32_t const* lhs,
+                       uint32_t const* rhs)
 {
   if (*lhs < *rhs)
     return -1;
@@ -145,91 +41,12 @@ hardware_io_comparison(uint32_t* lhs, uint32_t* rhs)
  * changes back into memory if write bit is set
  */
 
-static brbt_node
-policy_decide(struct brbt* tree, [[maybe_unused]] mmu_t* mmu)
-{
-  /* more advanced replacement algorithms can come in the future
-   * for now, just evict a random line
-   */
-
-  unsigned v;
-  assert(brbt_capacity(tree) != 0);
-
-  /* trick to get even distribution */
-  do
-    v = rand();
-  while (v > (1u << 31));
-
-  return v % brbt_capacity(tree);
-}
-
-typedef void (*brbt_abort)(struct brbt*,
-                           void* userdata,
-                           int internal_source_line);
-
-static void
-brbt_internal_abort([[maybe_unused]] struct brbt* tree,
-                    [[maybe_unused]] void* userdata,
-                    int internal_source_line)
-{
-  fprintf(stderr, "internal brbt error: line %i\n", internal_source_line);
-  assert(false);
-}
-
-static struct brbt_allocator_out
-page_tlb_allocator(struct brbt* tree,
-                   [[maybe_unused]] void* userdata,
-                   [[maybe_unused]] void* array,
-                   [[maybe_unused]] struct brbt_bookkeeping_info* bk)
-{
-  static struct tlb_page_node pages[TLB_PAGE_CAP];
-  static struct brbt_bookkeeping_info page_bookkeeping[TLB_PAGE_CAP];
-
-  struct brbt_allocator_out out;
-  out.data_array = NULL;
-  out.bk_array = NULL;
-  out.size = 0;
-
-  /* first allocation, provide it with the space */
-  if (brbt_capacity(tree) == 0) {
-    out.data_array = pages;
-    out.bk_array = page_bookkeeping;
-    out.size = TLB_PAGE_CAP;
-  }
-
-  return out;
-}
-
-static struct brbt_allocator_out
-segment_tlb_allocator(struct brbt* tree,
-                      [[maybe_unused]] void* userdata,
-                      [[maybe_unused]] void* array,
-                      [[maybe_unused]] struct brbt_bookkeeping_info* bk)
-{
-  static struct tlb_segment_node segments[TLB_SEGMENT_CAP];
-  static struct brbt_bookkeeping_info segments_bookkeeping[TLB_SEGMENT_CAP];
-
-  struct brbt_allocator_out out;
-  out.data_array = NULL;
-  out.bk_array = NULL;
-  out.size = 0;
-
-  /* first allocation, provide it with the space */
-  if (brbt_capacity(tree) == 0) {
-    out.data_array = segments;
-    out.bk_array = segments_bookkeeping;
-    out.size = TLB_PAGE_CAP;
-  }
-
-  return out;
-}
-
 static bool
 mmu_self_read(void* data, uint32_t addr, uint32_t* out)
 {
   tenc32_motherboard_t* mobo = data;
 
-  addr &= 0xFFFF;
+  addr &= UINT16_MAX;
   if (addr != 0)
     return false;
 
@@ -242,23 +59,30 @@ mmu_self_write(void* data, uint32_t addr, uint32_t val)
 {
   tenc32_motherboard_t* mobo = data;
 
-  addr &= 0xFFFF;
+  addr &= UINT16_MAX;
 
   if (addr == 0) {
     mobo->mmu.staging_register = val;
     return true;
-  } else if (addr == 1) {
+  }
+
+  if (addr == 1) {
     if (val == 0) {
       /* update the table physical location */
       mobo->mmu.segment_table_offset = mobo->mmu.staging_register;
       return true;
-    } else if (val == 1) {
+    }
+
+    if (val == 1) {
       /* invalidate the TLB */
-      brbt_clear(&mobo->mmu.tlb.pages);
-      brbt_clear(&mobo->mmu.tlb.segments);
-      assert(brbt_size(&mobo->mmu.tlb.pages) == 0);
+      mobo->mmu.tlb.num_pages = 0;
+      mobo->mmu.tlb.num_segments = 0;
+      for (unsigned i = 0; i < TLB_SEGMENT_CAP; i++)
+        mobo->mmu.tlb.segments[i].id = -1U;
       return true;
-    } else if (val == 2) {
+    }
+
+    if (val == 2) {
       /* translate a virtual address to a physical one */
       struct resolve r;
       if (!mmu_resolve_address(mobo, mobo->mmu.staging_register, &r)) {
@@ -273,12 +97,17 @@ mmu_self_write(void* data, uint32_t addr, uint32_t val)
       }
 
       return true;
-    } else {
-      return false;
     }
-  } else {
-    return false;
   }
+
+  return false;
+}
+
+static struct brbt_policy default_policy;
+[[gnu::constructor]] static void
+init_default_policy()
+{
+  default_policy = brbt_create_default_policy();
 }
 
 void
@@ -286,47 +115,20 @@ tenc32_mmu_init(struct tenc32_motherboard_t* mobo)
 {
   mobo->mmu.segment_table_offset = 0;
 
-  mobo->mmu.tlb.policy_data = NULL;
-  // mobo->mmu.tlb.policy_data = malloc(sizeof(struct tlb_policy));
-  // assert(mobo->mmu.tlb.policy_data);
+  static struct brbt_type const hardware_io_type = {
+    .membs = sizeof(struct tenc32_hardware_io),
+    .keyoff = offsetof(struct tenc32_hardware_io, id),
+    .deleter = 0,
+    .cmp = (brbt_comparator)hardware_io_comparison,
+  };
 
-  struct brbt_policy page_policy;
-  page_policy.policy_data = mobo;
-  page_policy.abort = brbt_internal_abort;
-  page_policy.insert_hook = NULL;
-  page_policy.remove_hook = NULL;
-  page_policy.resize = page_tlb_allocator;
-  page_policy.free = NULL;
-  page_policy.select = (brbt_policy_select)policy_decide;
+  for (unsigned i = 0; i < TLB_SEGMENT_CAP; i++)
+    mobo->mmu.tlb.segments[i].id = -1U;
+  mobo->mmu.tlb.num_segments = 0;
 
-  struct brbt_policy segment_policy;
-  segment_policy.policy_data = mobo;
-  segment_policy.abort = brbt_internal_abort;
-  segment_policy.insert_hook = NULL;
-  segment_policy.remove_hook = NULL;
-  segment_policy.resize = segment_tlb_allocator;
-  segment_policy.free = NULL;
-  segment_policy.select = (brbt_policy_select)policy_decide;
+  extern void tlb_segment_dump(tenc32_motherboard_t * mobo);
 
-  /* TODO: set up page table replacement algorithms */
-  mobo->mmu.tlb.pages = brbt_create(sizeof(struct tlb_page_node),
-                                    offsetof(struct tlb_page_node, id),
-                                    page_policy,
-                                    NULL,
-                                    (brbt_comparator)page_table_comparison);
-
-  mobo->mmu.tlb.segments =
-    brbt_create(sizeof(struct tlb_segment_node),
-                offsetof(struct tlb_segment_node, id),
-                segment_policy,
-                NULL,
-                (brbt_comparator)segment_table_comparison);
-
-  mobo->mmu.hardware_io = brbt_create(sizeof(struct tenc32_hardware_io),
-                                      offsetof(struct tenc32_hardware_io, id),
-                                      brbt_create_default_policy(),
-                                      NULL,
-                                      (brbt_comparator)hardware_io_comparison);
+  mobo->mmu.hardware_io = brbt_create(&hardware_io_type, &default_policy, mobo);
 
   struct tenc32_hardware_io mmu_self_io;
   mmu_self_io.id = 0x0000;
@@ -342,15 +144,15 @@ void
 tenc32_mmu_reset(struct tenc32_motherboard_t* mobo)
 {
   /* dont clear the hardware io */
-  brbt_clear(&mobo->mmu.tlb.pages);
-  brbt_clear(&mobo->mmu.tlb.segments);
+  for (unsigned i = 0; i < TLB_SEGMENT_CAP; i++)
+    mobo->mmu.tlb.segments[i].id = -1U;
 
   mobo->mmu.segment_table_offset = 0xFFFFFFFF;
   mobo->mmu.staging_register = 0;
 
   /* set up the default segments */
   struct tlb_segment_node code_segment = {
-    .id = TENC32_STARTUP_CODE_SEGMENT << 22,
+    .id = TENC32_STARTUP_CODE_SEGMENT,
     .flags.active = true,
     .flags.execute = true,
     .flags.protected = true,
@@ -362,7 +164,7 @@ tenc32_mmu_reset(struct tenc32_motherboard_t* mobo)
   };
 
   struct tlb_segment_node data_segment = {
-    .id = TENC32_STARTUP_DATA_SEGMENT << 22,
+    .id = TENC32_STARTUP_DATA_SEGMENT,
     .flags.active = true,
     .flags.write = true,
     .flags.protected = true,
@@ -374,7 +176,7 @@ tenc32_mmu_reset(struct tenc32_motherboard_t* mobo)
   };
 
   struct tlb_segment_node mmu_io_segment = {
-    .id = 0x3FF << 22,
+    .id = 0x3FF,
     .flags.active = true,
     .flags.write = true,
     .flags.protected = true,
@@ -384,9 +186,9 @@ tenc32_mmu_reset(struct tenc32_motherboard_t* mobo)
     .data.io.hardware_io = 0x000,
   };
 
-  brbt_insert(&mobo->mmu.tlb.segments, &code_segment, true);
-  brbt_insert(&mobo->mmu.tlb.segments, &data_segment, true);
-  brbt_insert(&mobo->mmu.tlb.segments, &mmu_io_segment, true);
+  *tlb_segment_insert(&mobo->mmu, TENC32_STARTUP_CODE_SEGMENT) = code_segment;
+  *tlb_segment_insert(&mobo->mmu, TENC32_STARTUP_DATA_SEGMENT) = data_segment;
+  *tlb_segment_insert(&mobo->mmu, 0x3FF) = mmu_io_segment;
 }
 
 bool
@@ -434,7 +236,7 @@ read_page_entry_at_location(tenc32_motherboard_t* mobo, uint32_t phys)
   return out;
 }
 
-static bool
+extern bool
 segment_walk_dump(tenc32_motherboard_t* mobo)
 {
   assert(mobo);
@@ -451,7 +253,8 @@ segment_walk_dump(tenc32_motherboard_t* mobo)
     struct segment_table_entry out =
       read_segment_entry_at_location(mobo, phys_offset);
 
-    fprintf(stderr, "ID %#.6x\n", out.id);
+    fprintf(
+      stderr, "ID %#.6x OFFSET: %#.6x SIZE: %#.6x\n", out.id, out.b, out.c);
 
     phys_offset += 0x10;
   }
@@ -459,17 +262,28 @@ segment_walk_dump(tenc32_motherboard_t* mobo)
   return false;
 }
 
-static bool
+extern void
+tlb_segment_dump(tenc32_motherboard_t* mobo)
+{
+  mmu_t* mmu = &mobo->mmu;
 
+  for (unsigned i = 0; i < TLB_SEGMENT_CAP; i++) {
+    struct tlb_segment_node* seg = &mmu->tlb.segments[i];
+    if (seg->id == -1U)
+      continue;
+    fprintf(stderr, "TLB ID: %#.6x\n", seg->id);
+  }
+}
+
+static bool
 segment_walk(tenc32_motherboard_t* mobo,
-             uint32_t addr,
+             uint32_t req_seg,
              struct segment_table_entry* out)
 {
   assert(mobo);
   assert(out);
 
   /* TODO: add an exception here */
-  uint32_t req_seg = TENC32_GET_SEGMENT(addr);
   uint32_t phys_offset = mobo->mmu.segment_table_offset;
   uint32_t len = word_at_phys_addr(mobo, phys_offset);
   phys_offset += 0x10; // aligned
@@ -485,6 +299,7 @@ segment_walk(tenc32_motherboard_t* mobo,
   return false;
 }
 
+[[maybe_unused]]
 static bool
 page_walk(tenc32_motherboard_t* mobo,
           uint32_t addr,
@@ -584,7 +399,10 @@ mmu_resolve_address(tenc32_motherboard_t* mobo,
 }
 
 bool
-tenc32_read_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
+tenc32_read_word_ex(tenc32_motherboard_t* mobo,
+                    uint32_t addr,
+                    uint32_t* out,
+                    struct resolve* rout)
 {
   /* words must be read on a boundary */
   if (addr % 4 != 0) {
@@ -593,12 +411,12 @@ tenc32_read_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
     return false;
   }
 
-  struct resolve r;
-  if (!mmu_resolve_address(mobo, addr, &r))
+  if (!mmu_resolve_address(mobo, addr, rout))
     return false;
 
-  if (r.io_space) {
-    brbt_node handler_node = brbt_find(&mobo->mmu.hardware_io, &r.mmio_space);
+  if (rout->io_space) {
+    brbt_node handler_node =
+      brbt_find(&mobo->mmu.hardware_io, &rout->mmio_space);
     if (handler_node == BRBT_NIL) {
       mobo->cpu.exception = TENC32_INTERRUPT_INVALID_IO_SPACE;
       EDPRINT("nonexistent io space read");
@@ -617,11 +435,18 @@ tenc32_read_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
     return true;
   }
 
-  if (r.paged)
-    r.page->flags.read = true;
+  if (rout->paged)
+    rout->page->flags.read = true;
 
-  *out = *(uint32_t*)&mobo->memory[r.phys_addr];
+  *out = *(uint32_t*)&mobo->memory[rout->phys_addr];
   return true;
+}
+
+bool
+tenc32_read_word(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t* out)
+{
+  struct resolve r;
+  return tenc32_read_word_ex(mobo, addr, out, &r);
 }
 
 bool
@@ -803,7 +628,7 @@ tenc32_write_byte(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
   if (r.paged)
     r.page->flags.read = true;
 
-  *(uint8_t*)&mobo->memory[r.phys_addr] = in;
+  mobo->memory[r.phys_addr] = in;
 
   return true;
 }
@@ -811,80 +636,174 @@ tenc32_write_byte(tenc32_motherboard_t* mobo, uint32_t addr, uint32_t in)
 struct tlb_page_node*
 tlb_page_consult(tenc32_motherboard_t* mobo, uint32_t addr)
 {
-  /* include both the segment and the page id */
-  addr &= (~0u << TENC32_PAGE_OFFSET_BITS);
-  brbt_node node = brbt_find(&mobo->mmu.tlb.pages, &addr);
+  /* unimplemented for now */
+  (void)mobo;
+  (void)addr;
+  assert(false);
+  // /* include both the segment and the page id */
+  // addr &= (~0U << TENC32_PAGE_OFFSET_BITS);
+  // brbt_node node = brbt_find(&mobo->mmu.tlb.pages, &addr);
 
-  /* add it to the tlb */
-  if (node == BRBT_NIL) {
-    struct page_table_entry entry;
-    if (!page_walk(mobo, addr, &entry))
-      return NULL;
+  // /* add it to the tlb */
+  // if (node == BRBT_NIL) {
+  //   struct page_table_entry entry;
+  //   if (!page_walk(mobo, addr, &entry))
+  //     return NULL;
 
-    struct tlb_page_node new_node;
-    new_node.id = addr;
-    new_node.offset = entry.offset;
-    new_node.flags.active = entry.flags & TENC32_PAGE_ACTIVE;
-    new_node.flags.written = entry.flags & TENC32_PAGE_WRITTEN;
-    new_node.flags.read = entry.flags & TENC32_PAGE_READ;
+  //   struct tlb_page_node new_node;
+  //   new_node.id = addr;
+  //   new_node.offset = entry.offset;
+  //   new_node.flags.active = entry.flags & TENC32_PAGE_ACTIVE;
+  //   new_node.flags.written = entry.flags & TENC32_PAGE_WRITTEN;
+  //   new_node.flags.read = entry.flags & TENC32_PAGE_READ;
 
-    brbt_insert(&mobo->mmu.tlb.pages, &new_node, true);
-    node = brbt_find(&mobo->mmu.tlb.pages, &addr);
-    if (node == BRBT_NIL)
-      fprintf(
-        stderr,
-        "node not found in TLB page table despite being just inserted?\n"),
-        abort();
+  //   brbt_insert(&mobo->mmu.tlb.pages, &new_node, true);
+  //   node = brbt_find(&mobo->mmu.tlb.pages, &addr);
+  //   if (node == BRBT_NIL)
+  //     fprintf(
+  //       stderr,
+  //       "node not found in TLB page table despite being just inserted?\n"),
+  //       abort();
+  // }
+
+  // return brbt_get(&mobo->mmu.tlb.pages, node);
+}
+
+enum
+{
+  HASHMUL = 31,
+};
+
+static unsigned
+hash_segment(uint32_t segment)
+{
+  unsigned out = segment * HASHMUL;
+  if (out == -1U)
+    out += 1;
+  return out;
+}
+
+static unsigned
+segment_iter(unsigned in)
+{
+  unsigned const out = in + 1;
+  if (out >= TLB_SEGMENT_CAP)
+    return 0;
+  return out;
+}
+
+static struct tlb_segment_node*
+segment_at(mmu_t* mmu, uint32_t idx)
+{
+  struct tlb_segment_node* node = &mmu->tlb.segments[idx];
+  if (node->id == -1U)
+    return 0;
+  return node;
+}
+
+static struct tlb_segment_node*
+tlb_segment_search(mmu_t* mmu, uint32_t segment)
+{
+  unsigned const hash = hash_segment(segment);
+  unsigned idx = hash % TLB_SEGMENT_CAP;
+
+  struct tlb_segment_node* node = 0;
+
+  for (;;) {
+    node = segment_at(mmu, idx);
+
+    if (node == NULL)
+      break;
+
+    if (node->id == segment)
+      break;
+
+    idx = segment_iter(idx);
   }
 
-  return brbt_get(&mobo->mmu.tlb.pages, node);
+  return node;
+}
+
+/* returns the segment slot to insert at */
+static struct tlb_segment_node*
+tlb_segment_insert(mmu_t* mmu, uint32_t segment)
+{
+  unsigned const hash = hash_segment(segment);
+  unsigned idx = hash % TLB_SEGMENT_CAP;
+
+  if (mmu->tlb.num_segments >= TLB_SEGMENT_MAXSIZE) {
+    /* replacement policy is just to... remove the first
+     * one in the list where the hash index is.
+     * this is lazy, and it would probably be better
+     * to remove with at least a little bit of randomness
+     * but it works for now. */
+    return &mmu->tlb.segments[idx];
+  }
+
+  struct tlb_segment_node* node = 0;
+
+  for (;;) {
+    node = &mmu->tlb.segments[idx];
+    if (node->id == -1U || node->id == segment)
+      break;
+    idx = segment_iter(idx);
+  }
+
+  return node;
+}
+
+static bool
+segment_entry_to_node(tenc32_motherboard_t* mobo,
+                      struct segment_table_entry entry,
+                      struct tlb_segment_node* out)
+{
+  out->id = entry.id;
+  out->flags.active = entry.flags & TENC32_SEGMENT_DESCRIPTOR_ACTIVE;
+  out->flags.write = entry.flags & TENC32_SEGMENT_DESCRIPTOR_WRITE;
+  out->flags.execute = entry.flags & TENC32_SEGMENT_DESCRIPTOR_EXECUTE;
+  out->flags.paged = entry.flags & TENC32_SEGMENT_DESCRIPTOR_PAGED;
+  out->flags.io = entry.flags & TENC32_SEGMENT_DESCRIPTOR_IO;
+  out->flags.protected = entry.flags & TENC32_SEGMENT_DESCRIPTOR_PROTECTED;
+
+  /* segments cannot be paged and represent IO space at the same time */
+  if (out->flags.paged && out->flags.io) {
+    mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
+    EDPRINT("segment is paged and io");
+    return false;
+  }
+
+  if (out->flags.paged)
+    out->data.paged.offset = entry.b;
+  else
+    out->data.unpaged.offset = entry.b, out->data.unpaged.size = entry.c;
+
+  return true;
 }
 
 struct tlb_segment_node*
 tlb_segment_consult(tenc32_motherboard_t* mobo, uint32_t addr)
 {
-  addr &= (~0u << 22);
-  brbt_node node = brbt_find(&mobo->mmu.tlb.segments, &addr);
+  addr = addr >> TENC32_SEGMENT_SELECTOR_OFFSET;
+  struct tlb_segment_node* node = tlb_segment_search(&mobo->mmu, addr);
+  if (node)
+    return node;
 
-  /* have to add it to the tlb */
-  if (node == BRBT_NIL) {
-    struct segment_table_entry entry;
-    if (!segment_walk(mobo, addr, &entry))
-      return NULL;
-
-    struct tlb_segment_node new_node;
-    new_node.id = addr;
-    new_node.flags.active = entry.flags & TENC32_SEGMENT_DESCRIPTOR_ACTIVE;
-    new_node.flags.write = entry.flags & TENC32_SEGMENT_DESCRIPTOR_WRITE;
-    new_node.flags.execute = entry.flags & TENC32_SEGMENT_DESCRIPTOR_EXECUTE;
-    new_node.flags.paged = entry.flags & TENC32_SEGMENT_DESCRIPTOR_PAGED;
-    new_node.flags.io = entry.flags & TENC32_SEGMENT_DESCRIPTOR_IO;
-    new_node.flags.protected =
-      entry.flags & TENC32_SEGMENT_DESCRIPTOR_PROTECTED;
-
-    /* segments cannot be paged and represent IO space at the same time */
-    if (new_node.flags.paged && new_node.flags.io) {
-      mobo->cpu.exception = TENC32_INTERRUPT_SEGMENTATION_FAULT;
-      EDPRINT("segment is paged and io");
-      return NULL;
-    }
-
-    if (new_node.flags.paged)
-      new_node.data.paged.offset = entry.b;
-    else
-      new_node.data.unpaged.offset = entry.b,
-      new_node.data.unpaged.size = entry.c;
-
-    brbt_insert(&mobo->mmu.tlb.segments, &new_node, true);
-    node = brbt_find(&mobo->mmu.tlb.segments, &addr);
-    if (node == BRBT_NIL)
-      fprintf(
-        stderr,
-        "node not found in TLB segment table despite being just inserted?\n"),
-        exit(1);
+  struct segment_table_entry entry;
+  if (!segment_walk(mobo, addr, &entry)) {
+    printf("failed to find segment while walking table\n");
+    return 0;
   }
 
-  return brbt_get(&mobo->mmu.tlb.segments, node);
+  struct tlb_segment_node* out = tlb_segment_insert(&mobo->mmu, addr);
+  assert(out);
+
+  if (!segment_entry_to_node(mobo, entry, out)) {
+    printf("failed to convert segment entry to node\n");
+    return 0;
+  }
+
+  mobo->mmu.tlb.num_segments++;
+  return out;
 }
 
 [[maybe_unused]] static void

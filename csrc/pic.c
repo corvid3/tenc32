@@ -18,8 +18,8 @@ picwr(tenc32_motherboard_t* mobo, unsigned addr, unsigned in)
 
   if (addr == 0) {
     mtx_lock(&mobo->pic.mutex);
-    mobo->pic.incoming_flags &= ~(1 << in);
-    mobo->pic.currently_handled &= ~(1 << in);
+    mobo->pic.incoming_flags &= ~(1U << in);
+    mobo->pic.currently_handled &= ~(1U << in);
     mtx_unlock(&mobo->pic.mutex);
   } else
     return false;
@@ -35,6 +35,7 @@ tenc32_init_pic(tenc32_motherboard_t* mobo)
   io.data = mobo;
   io.read = (tenc32_hardware_read)picrd;
   io.write = (tenc32_hardware_write)picwr;
+  io.cleanup = 0;
   if (!tenc32_add_io_space(mobo, io))
     fprintf(stderr, "tenc32 fatal error: unable to insert pic io space\n"),
       exit(1);

@@ -138,7 +138,7 @@ tenc32_motherboard_destroy(tenc32_motherboard_t*);
  */
 void
 tenc32_insert_exception_callback(tenc32_motherboard_t*,
-                                 void (*)(tenc32_motherboard_t*));
+                                 void (*)(tenc32_motherboard_t*, unsigned));
 
 /* performs a logical restart of the cpu
  *  - loads the bios segments into memory
@@ -146,7 +146,7 @@ tenc32_insert_exception_callback(tenc32_motherboard_t*,
  *  - sets protection mode to 0
  */
 void
-tenc32_restart(tenc32_motherboard_t* cpu, char const (*bios)[TENC32_ROM_SIZE]);
+tenc32_restart(tenc32_motherboard_t* mobo, char const (*bios)[TENC32_ROM_SIZE]);
 
 enum tenc32_step_val
 tenc32_step(tenc32_motherboard_t* cpu);
@@ -207,3 +207,12 @@ tenc32_add_io_space(tenc32_motherboard_t*, struct tenc32_hardware_io);
 
 void
 tenc32_dump_registers(tenc32_motherboard_t*);
+
+/* allows a thread to sleep until a motherboard gets an interrupt */
+void
+tenc32_halt_sleep(tenc32_motherboard_t*);
+
+/* wakes up a halt-waiting thread. useful if you need
+ * to wake a thread up to shut down a motherboard from an interrupt */
+void
+tenc32_awake_mobo(tenc32_motherboard_t*);

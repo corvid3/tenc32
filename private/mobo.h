@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <threads.h>
 
+#include "ccc.h"
 #include "cci.h"
 #include "crow.crowcpu_arch/crowcpu_arch.h"
 #include "crowcpu.h"
@@ -17,6 +18,8 @@
 struct tenc32_pic
 {
   mtx_t mutex;
+  cnd_t mobo_sleeper;
+
   uint32_t incoming_flags;
   uint32_t currently_handled;
 };
@@ -37,8 +40,6 @@ typedef struct
      */
     tenc32_register_t imask;
 
-    /* execution flag bit */
-    tenc32_register_t flags;
     tenc32_register_t idtr;
   } crs;
 
@@ -57,13 +58,14 @@ typedef struct tenc32_motherboard_t
   struct tenc32_pic pic;
   mmu_t mmu;
   cci_t cci;
+  struct ccc_t ccc;
 
   uint8_t* memory;
   uint32_t memory_size;
 
   bool poweroff;
 
-  void (*exception_callback)(tenc32_motherboard_t*);
+  void (*exception_callback)(tenc32_motherboard_t*, unsigned);
 } tenc32_motherboard_t;
 
 // #define EN_EDPRINT

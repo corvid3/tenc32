@@ -11,7 +11,7 @@ authors = { }
 
 [depends]
 internal = { 
-	"=crow.brbt-0.2.0"
+	"=crow.brbt-0.4.0"
 }
 external = { 
 	"=crow.crowcpu_arch-0.1.0" 
@@ -28,7 +28,7 @@ std = 17
 sources = { 
 	"crowcpu.c" 
 	"mmu.c"
-	"cpc.c"
+	"ccc.c"
 	"pic.c"
 }
 

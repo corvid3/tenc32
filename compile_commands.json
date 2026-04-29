@@ -1,0 +1,90 @@
+[
+    {
+        "arguments": [
+            "x86_64-pc-linux-gnu-cc",
+            "-c",
+            "-Iprivate",
+            "-Iinclude",
+            "-fdiagnostics-color=always",
+            "-Og",
+            "-g",
+            "-fPIC",
+            "-DHEWG_ORG=crow",
+            "-DHEWG_NAME=crowcpu",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-std=c17",
+            "-I/home/korvo/.hewg/packages/crow.brbt-0.4.0:x86-linux-gnu/include",
+            "-I/home/korvo/.hewg/packages/crow.crowcpu_arch-0.1.0:x86-linux-gnu/include"
+        ],
+        "directory": "/home/korvo/gits/crowcpu",
+        "file": "csrc/crowcpu.c"
+    },
+    {
+        "arguments": [
+            "x86_64-pc-linux-gnu-cc",
+            "-c",
+            "-Iprivate",
+            "-Iinclude",
+            "-fdiagnostics-color=always",
+            "-Og",
+            "-g",
+            "-fPIC",
+            "-DHEWG_ORG=crow",
+            "-DHEWG_NAME=crowcpu",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-std=c17",
+            "-I/home/korvo/.hewg/packages/crow.brbt-0.4.0:x86-linux-gnu/include",
+            "-I/home/korvo/.hewg/packages/crow.crowcpu_arch-0.1.0:x86-linux-gnu/include"
+        ],
+        "directory": "/home/korvo/gits/crowcpu",
+        "file": "csrc/mmu.c"
+    },
+    {
+        "arguments": [
+            "x86_64-pc-linux-gnu-cc",
+            "-c",
+            "-Iprivate",
+            "-Iinclude",
+            "-fdiagnostics-color=always",
+            "-Og",
+            "-g",
+            "-fPIC",
+            "-DHEWG_ORG=crow",
+            "-DHEWG_NAME=crowcpu",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-std=c17",
+            "-I/home/korvo/.hewg/packages/crow.brbt-0.4.0:x86-linux-gnu/include",
+            "-I/home/korvo/.hewg/packages/crow.crowcpu_arch-0.1.0:x86-linux-gnu/include"
+        ],
+        "directory": "/home/korvo/gits/crowcpu",
+        "file": "csrc/ccc.c"
+    },
+    {
+        "arguments": [
+            "x86_64-pc-linux-gnu-cc",
+            "-c",
+            "-Iprivate",
+            "-Iinclude",
+            "-fdiagnostics-color=always",
+            "-Og",
+            "-g",
+            "-fPIC",
+            "-DHEWG_ORG=crow",
+            "-DHEWG_NAME=crowcpu",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-std=c17",
+            "-I/home/korvo/.hewg/packages/crow.brbt-0.4.0:x86-linux-gnu/include",
+            "-I/home/korvo/.hewg/packages/crow.crowcpu_arch-0.1.0:x86-linux-gnu/include"
+        ],
+        "directory": "/home/korvo/gits/crowcpu",
+        "file": "csrc/pic.c"
+    }
+]
